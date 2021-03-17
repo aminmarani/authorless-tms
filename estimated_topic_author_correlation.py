@@ -5,6 +5,7 @@ import timeit
 
 from collections import Counter
 from gensim.models import LdaModel
+from gensim.models.wrappers import LdaMallet
 from scipy.sparse import lil_matrix
 from scipy.special import xlogy
 
@@ -32,7 +33,43 @@ def get_gensim_thetas(in_tsv, vocab_index, gensim_ldamodel):
     thetas = np.vstack(thetas)
     return thetas
 
+  
+# Get document-topic distributions (theta) for a gensim LDA model.
+def get_gensim_mallet_thetas(in_tsv, vocab_index, gensim_ldamodel):
+    n_topics = gensim_ldamodel.num_topics
+    reader = open(in_tsv, mode='r', encoding='utf-8')
 
+    #build doc_topics matrix  
+    doc_topics = gensim_ldamodel.load_document_topics() #loading doc-topic distribution
+    doc_number = 0
+    for D in doc_topics:
+      doc_number += 1
+    doc_topics_np = np.zeros((doc_number,n_topics)) #initializing a numpy array to collect all topic-doc matrices
+    docc = 0
+    doc_topics = gensim_ldamodel.load_document_topics() #loading doc-topic distribution
+    #reading one by one from doc_topics LDA output
+    for D in doc_topics:
+      doc_topics_np[docc,:] = np.asarray(D)[:,1]
+      docc = docc + 1
+    
+    return doc_topics_np
+    # print(doc_topics_np.shape)
+
+    # thetas = []
+    # for doc_id, line in enumerate(reader):
+    #     fields = line.strip().split('\t')
+    #     token_counter = Counter(fields[2].split())
+    #     doc_bow = [(vocab_index[term], count) for term, count in
+    #                token_counter.items()]
+    #     doc_thetas = np.zeros(n_topics)
+    #     for topic, prob in gensim_ldamodel.get_document_topics(doc_bow):
+    #         doc_thetas[doc_id, topic] = prob
+    #     thetas.append(doc_thetas)
+    # reader.close()
+    # thetas = np.vstack(thetas)
+    # return thetas
+
+  
 # Get document-topic distributions (theta) for MALLET LDA model.
 def get_mallet_thetas(doc_topics_fn):
     thetas = []
@@ -87,7 +124,10 @@ def estimate_topic_counts(in_tsv, vocab_index, author_index, thetas, phis,
             topic_dist = np.where(nz_phis.T[term_id] * nz_theta_d != 0,
                                   np.exp(log_phis.T[term_id] + log_theta_d),
                                   0.0).ravel()
+            if topic_dist.sum()==0:
+              continue
             topic_dist = topic_dist / topic_dist.sum()
+            
             topics = np.random.choice(n_topics, size=count, p=topic_dist)
             for topic in topics:
                 topic_term_counts[topic, term_id] += 1
@@ -106,6 +146,26 @@ if __name__ == '__main__':
 
     # gensim sub-parser
     gensim_parser = subparsers.add_parser('gensim', add_help=False)
+    gensim_parser.add_argument('-h', '--help', action='help',
+                               help='Show this help message and exit.')
+    required_gensim = gensim_parser.add_argument_group('required arguments')
+    required_gensim.add_argument('--input', metavar='FILE',
+                                 dest='in_tsv', required=True,
+                                 help='The file of the collection which the ' +
+                                      'topic model was trained on.')
+    required_gensim.add_argument('--lda-model', dest='ldamodel_fn',
+                                 metavar='FILE', required=True,
+                                 help='The file containing the saved gensim ' +
+                                      'ldamodel.')
+    required_gensim.add_argument('--output', metavar='FILE',
+                                 dest='out_tsv', required=True,
+                                 help='Write the estimated topic-author ' +
+                                      'correlation results to this file.')
+    gensim_parser.add_argument('-v', '--verbose', action='store_true',
+                               dest='verbose')
+
+    # gensim-mallet sub-parser
+    gensim_parser = subparsers.add_parser('mallet-gensim', add_help=False)
     gensim_parser.add_argument('-h', '--help', action='help',
                                help='Show this help message and exit.')
     required_gensim = gensim_parser.add_argument_group('required arguments')
@@ -163,6 +223,9 @@ if __name__ == '__main__':
         if tool == 'gensim':
             gensim_parser.print_help(sys.stderr)
             sys.exit()
+        elif tool == 'mallet-gensim':
+            gensim_parser.print_help(sys.stderr)
+            sys.exit()
         elif tool == 'mallet':
             mallet_parser.print_help(sys.stderr)
             sys.exit()
@@ -184,6 +247,12 @@ if __name__ == '__main__':
         thetas = get_mallet_thetas(args.doc_topics_fn)
         n_topics = thetas.shape[1]
         phis = get_mallet_phis(args.word_weights_fn, vocab_index, n_topics)
+    elif tool == 'mallet-gensim':
+        lda_model = LdaMallet.load(args.ldamodel_fn)
+        vocab_index = {term: i for i, term in lda_model.id2word.items()}
+        thetas = get_gensim_mallet_thetas(args.in_tsv, vocab_index, lda_model)
+        phis = lda_model.get_topics()
+        phis = phis / phis.sum(axis=1, keepdims=True)
     print('Building topic-author-term counts')
     (topic_term_counts,
      topic_author_term_counts) = estimate_topic_counts(args.in_tsv,
